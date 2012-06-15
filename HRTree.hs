@@ -40,6 +40,7 @@ orden entre los mismos.
 import Data.Sequence as S
 import Data.Foldable as F
 import Data.Bits
+import Control.Monad.Error
 
 data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Eq, Show)
 
@@ -47,12 +48,14 @@ type LHV = Int
 type MBR = Rectangle
 type Point = ( Int, Int )
 
-data RTree = RTree Int Int HRTree
+data RTree = RTree Int Int HRTree deriving (Show)
 
-data NodeInfo = NI {mbr :: MBR, tree :: HRTree, lhv :: LHV}
-data LeafInfo = LI {rec :: Rectangle, hv :: LHV}
-data HRTree = Node (Seq NodeInfo)
-            | Leaf (Seq LeafInfo)
+--data NodeInfo = NI {mbr :: MBR, tree :: HRTree, lhv :: LHV}
+--data LeafInfo = LI {rec :: Rectangle, hv :: LHV}
+--              deriving(Show)
+data HRTree = Node {tree::(Seq HRTree), mbr :: MBR, lhv :: LHV} 
+            | Leaf {recs::(Seq Rectangle), lmbr :: MBR, llhv :: LHV} 
+            deriving(Show)
 
 isRectangle :: Rectangle -> Bool
 isRectangle r = snd (ul r) > snd (ll r)
@@ -102,29 +105,56 @@ instance Ord Rectangle where
 newRTree :: Int -> Int -> RTree
 newRTree cl cn = RTree cl cn $ Leaf empty
 
+
 search :: RTree -> Rectangle -> Maybe [ Rectangle ]
 search (RTree cl cn t) r = case (toList $ auxSearch r t) of
   ls@(x:_) -> Just ls
   []       -> Nothing
   where
     auxSearch :: Rectangle -> HRTree -> Seq Rectangle
-    auxSearch r (Node n) = fromList $ F.concatMap
-                           (\ ni -> toList $ auxSearch r (tree ni)) $
-                           S.filter verifyOverlap n
-    auxSearch r (Leaf l) = S.filter (overlapped r) $ fmap rec l
+    auxSearch r n@(Node _ _ _) = fromList $ F.concatMap
+                                 (\ ni -> toList $ auxSearch r (tree ni)) $
+                                 S.filter verifyOverlap n
+    auxSearch r l@(Leaf _ _) = S.filter (overlapped r) (recs l)
     verifyOverlap ni = overlapped r (mbr ni)
 
+--insert :: RTree -> Rectangle -> Either String (Maybe HRTree,HRTree)
+--insert (RTree _cl _cn t) r = insert' t r
+-- 
+--insert' :: HRTree -> Rectangle -> Either String (Maybe HRTree,HRTree)
+--insert' (Leaf rs m h) rect = Right $ (Nothing,Leaf ((LI rect 1) <| sons)) --fix
+--insert' (Node sons m h) rect = do
+--  (i,node) <- Right $ pickNode sons rect
+--  (ov,newnode) <- insert' node rect
+--  newsons <- Right $ S.update i newnode sons--missing mrb&lhv update
+--  Right $ handleOverFlow (Node newsons m h) ov
+-- 
+--handleOverFlow :: HRTree -> Maybe HRTree -> (Maybe HRTree, HRTree)
+--handleOverFlow t Nothing = (Nothing,t)
+--handleOverFlow parent@(Node sons m h) (Just ov) = 
+--  where (i,cs) = getCooperatingSibling sons ov 
+--        (ov,newparent) = either
+--                         (split parent)
+--                         ((,) Nothing)
+--                         insertNodeIfNotFull parent cs ov
+--  
+--insertNodeIfNotFull :: HRTree -> HRTree -> HRTree -> Either HRTree HRTree
+--insertNodeIfNotFull parent n@(Node sons m h) ov =
+--  if (S.length sons) < 2 then
+--    Right $ newsons m h
+--      where newsons = S.unstableSort (ov <| sons)
+--  else
+--    Left r
+-- 
+--split
+                                  
+--insertRectIfNotFull :: HRTree -> Rectangle -> Either HRTree HRTree
+--insertRectIfNotFull (Leaf sons) r = if (S.length sons) < 2 then
+--                                      Right $ S.unstableSort (r <| sons)
+--                                    else
+--                                      Left r
 
--- insert :: RTree -> Rectangle -> Either e RTree
--- insert (RTree cl cn t) r = case (isRectangle)
-  
---   case (insert' t r) of
---   Left e     -> throwError e
---   Right tree -> Right (RTree cl cn tree)
---   where
---     insert' :: HRTree -> Rectangle -> Either e HRTree
---     insert' (Leaf sli) r = a
---     insert' (Node sni) r = a
-
+pickNode:: Seq NodeInfo -> Rectangle -> (Int,NodeInfo)
+pickNode sons r = (1,S.index sons 1)
 
 --delete :: tree -> Rectangle -> Either e tree
