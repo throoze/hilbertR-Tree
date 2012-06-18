@@ -37,10 +37,11 @@ orden entre los mismos.
 --                               --   /PQueue/ sin el elemento.
 -- dequeue q = deleteMinimum q
 
+import Control.Monad.Error
 import Data.Sequence as S
 import Data.Foldable as F
 import Data.Bits
-import Control.Monad.Error
+import Graphics.HGL as G
 
 data Rectangle = R { ul , ur , ll , lr :: ( Int , Int ) } deriving (Eq, Show)
 
@@ -55,17 +56,52 @@ data HRTree = Node {tree::(Seq HRTree), mbr :: MBR, lhv :: LHV}
             deriving (Show)
 
 --overflow information
-data OvInfo = OvInfo {ov::Either Rectangle HRTree,ovrect::Rectangle}
+type OvInfo = Either Rectangle HRTree
               
 newtype CoopS = CoopS (Int,HRTree)
+
+winSize :: Int
+winSize = 700
+
+showTree :: RTree -> IO ()
+showTree (RTree cl cn hrtree) = do
+  putStr("Max recs in leafs: ")
+  putStrLn(show(cl))
+  putStr("Max sons in nodes: ")
+  putStrLn(show(cn))
+  G.runGraphics (
+    G.withWindow_ "Ugly tree" (winSize, winSize) $
+    (\w -> do
+        showTree' w hrtree
+        G.getKey w)
+    )
+
+drawRectangle :: G.Window -> Rectangle -> IO ()
+drawRectangle  w (R (ulxB,ulyB) _ _ (lrxB,lryB)) = F.mapM_ (G.drawInWindow w) r
+  where  ulx = (ulxB * winSize) `div` 65335
+         uly = (ulyB * winSize) `div` 65335
+         lrx = (lrxB * winSize) `div` 65335
+         lry = (lryB * winSize) `div` 65335
+         r = (G.line (ulx,uly) (lrx,uly)): --top
+             (G.line (lrx,uly) (lrx,lry)): --right
+             (G.line (lrx,lry) (ulx,lry)): --bottom
+             [(G.line (ulx,lry) (ulx,uly))]  --left
+  
+showTree' :: G.Window -> HRTree -> IO ()
+showTree' w (Node sons mbr _) = do
+  drawRectangle w mbr
+  F.mapM_ (showTree' w) sons
+showTree' w (Leaf rs mbr _) = do
+  drawRectangle w mbr
+  F.mapM_ (drawRectangle w) rs
 
 getLHV :: HRTree -> LHV
 getLHV (Node _ _ l) = l
 getLHV (Leaf _ _ l) = l
 
 getOvLHV :: OvInfo -> LHV
-getOvLHV (OvInfo (Right t) _) = getLHV t
-getOvLHV (OvInfo (Left r)  _) = hilbert r
+getOvLHV (Right t) = getLHV t
+getOvLHV (Left  r) = hilbert r
 
 createSon :: HRTree -> HRTree
 createSon (Node sons _ _) =
@@ -75,13 +111,13 @@ createSon (Node sons _ _) =
 
 updateSon :: Int -> OvInfo -> HRTree -> HRTree
 
-updateSon i (OvInfo (Right n) r) parent@(Node t m l) =
+updateSon i (Right n) parent@(Node t m l) =
   parent{tree = S.update i newSon (tree parent) }
   where son@(Node _ _ _) = index t i
         newGrandSons = S.unstableSort (n <| (tree son))
         newSon = son{tree=newGrandSons}
 
-updateSon i (OvInfo (Left r) _) parent@(Node t m l) =
+updateSon i (Left r) parent@(Node t m l) =
   parent{tree = S.update i newSon (tree parent) }
   where son@(Leaf _ _ _) = index t i
         newGrandSons = S.unstableSort (r <| (recs son))
@@ -95,8 +131,8 @@ getSons (Node s _ _) = fmap Right s
 getSons (Leaf s _ _) = fmap Left s
   
 putIntoSeq :: OvInfo -> Seq (Either Rectangle HRTree)
-putIntoSeq (OvInfo (Left  r) _) = S.empty |> (Left  r)
-putIntoSeq (OvInfo (Right t) _) = S.empty |> (Right t)
+putIntoSeq (Left  r) = S.empty |> (Left  r)
+putIntoSeq (Right t) = S.empty |> (Right t)
 
 emptyMBR :: MBR
 emptyMBR = R (0,0) (0,0) (0,0) (0,0)
@@ -133,7 +169,7 @@ overlapped r1 r2 = not $
                    || snd (ul r1) < snd (lr r2)
                    || snd (lr r1) > snd (ul r2)
 
-centroid :: Rectangle -> Point
+centroid :: Rectangle -> Main.Point
 centroid r = (((fst (ul r)) + (fst (lr r))) `div` 2,
               ((snd (ul r)) + (snd (lr r))) `div` 2)
 
@@ -194,9 +230,14 @@ search (RTree cl cn t) r = case (toList $ auxSearch r t) of
     verifyOverlap ni = overlapped r (mbr ni)
 
 
-insert :: RTree -> Rectangle -> Either String (Maybe OvInfo,HRTree)
-insert (RTree _cl _cn t) r = insert' t r
- 
+insert :: RTree -> Rectangle -> Either String RTree
+insert (RTree cl cn t) r = do
+   (maybeov,newt) <- insert' t r
+   newSons <- Right $
+              maybe newt (\ov->(Node (S.empty|>newt|>(right ov)) emptyMBR 0))
+              maybeov
+   Right $ RTree cl cn newSons
+   
 insert' :: HRTree -> Rectangle ->
            Either String (Maybe OvInfo,HRTree)
 insert' (Leaf rs m h) rect = Right $ (Nothing,Leaf (rect <| rs) m h) --fix 
@@ -212,7 +253,7 @@ handleOverFlow :: HRTree -> Maybe OvInfo -> Rectangle ->
 handleOverFlow parent Nothing rect = (Nothing,parent) --missing update mbr&lhv
 handleOverFlow parent@(Node sons m h) (Just ovinfo) rect =
   either
-  (split parent rect) --make split******
+  (split parent rect)
   ((,) Nothing)
   (insertNodeIfNotFull parent cs ovinfo rect)
     where cs = getCooperatingSibling parent ovinfo
@@ -253,7 +294,11 @@ pickNode sons r = maybe
         maybeind = S.findIndexL biggerThanRectLHV sons
 
 split:: HRTree -> Rectangle -> OvInfo -> (Maybe OvInfo, HRTree)
-split parent rect ovInfo = (Nothing,parent{tree=newSons})
+split parent rect ovInfo = if (S.length newSons <= 2) then--WIRED
+                             (Nothing,parent{tree=newSons})
+                           else
+                             let xs :> a = viewr newSons in
+                             (Just (Right a),parent{tree=xs})
   where allGrandSons = (putIntoSeq ovInfo) <| (getGrandSons parent)
         newGrandsons = redistribute (getGrandSons parent) 3 --WIRED
         newSons = S.zipWith replaceSons (getSons parent) newGrandsons
@@ -271,5 +316,18 @@ redistribute stuffList parts = evenly stuff S.empty
             acc
           else
             evenly (S.drop sz sequ) (acc >< (S.empty |> (S.take sz sequ)))
+  
+runTest :: IO ()
+runTest = do
+  ini <- return (newRTree 2 3)
+  test <- return (do
+                     a1 <- insert ini (R (1000,1000) (10000,1000)
+                                       (1000,10000) (10000,10000))
+                     a2 <- insert a1 (R (20000,20000) (25000,20000)
+                                      (20000,25000) (25000,25000))
+                     return a2
+                 )
+  putStrLn(show test)
+  either putStrLn showTree test
   
 --delete :: tree -> Rectangle -> Either e tree
