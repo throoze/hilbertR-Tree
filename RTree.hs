@@ -57,7 +57,7 @@ data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Eq, Show)
 instance Ord Rectangle where
   r1 < r2 = hilbert r1 < hilbert r2
 
--- Some convenience aliases
+-- Some convenience aliases and constructors
 type LHV = Int
 type MBR = Rectangle
 type Point = ( Int, Int )
@@ -133,7 +133,7 @@ hilbertDistance d (x,y)
               where step = dist (side `shiftR` 1) (area `shiftR` 2)
 
 {-
-Calculates the centroid of a 'Rectangle'
+Calculates the hilbert's value of the centroid of a 'Rectangle'
 -}
 hilbert :: Rectangle -> Int
 hilbert r = hilbertDistance 65536 $ centroid r
@@ -183,6 +183,30 @@ tail' :: Seq a -> Seq a
 tail' sec = case (viewl sec) of
   (x :< xs) -> xs
 
+{-
+Gets the element contained in a 'ViewR' structure.
+-}
+getR :: ViewR a -> a
+getR (xs :> x) = x
+
+{-
+Gets the rightmost element of a 'Seq'
+-}
+last' :: Seq a -> a
+last' sec = getR $ viewr sec
+
+{-
+Gets the result of removing the rightmost element of a 'Seq'
+-}
+init' :: Seq a -> Seq a
+init' sec = case (viewr sec) of
+  (xs :> x) -> xs
+
+
+{-
+Deletes a given element of a Sequence in case of the element belongs to it. If
+not, returns the same Sequence.
+-}
 deleteFromSeq :: (Eq a) => Seq a -> a -> Seq a
 deleteFromSeq sec elem = foldl' decide empty sec
   where
@@ -190,38 +214,126 @@ deleteFromSeq sec elem = foldl' decide empty sec
       | elem /= e = acc |> e
       | otherwise = acc
 
-{- Some other useful functions on sequences -}
--- init' :: Seq a -> Seq a
--- init' sec = case (viewr sec) of
---   (xs :> x) -> xs
-
--- last' :: Seq a -> a
--- last' sec = getR $ viewr sec
-
--- getR :: ViewR a -> a
--- getR (xs :> x) = x
-
 {- Convinience functions on Zippers -}
 
 {-
-Reconstruct an HRTree from a Zipper.
+Reconstruct an HRTree from a Zipper, updating mbr's and lhv's.
 -}
 reconstruct :: Zipper -> HRTree
 reconstruct ( focus , crumbs )
   | S.null crumbs = focus
-  | otherwise   = case (head' crumbs) of
-    Crumb mbr lhv before after ->
-      reconstruct (Node (before >< (focus <| after)) mbr lhv , tail' crumbs)
+  | otherwise   = case (focus) of
+    Leaf rects _ _ -> case (head' crumbs) of
+      Crumb cmbr clhv before after ->
+        reconstruct (Node
+                     (before >< (updatedFocus <| after))
+                     (maximumBR (lmbr updatedFocus) cmbr)
+                     (max (llhv updatedFocus) clhv) ,
+                      tail' crumbs)
+      where
+        updatedFocus = Leaf rects (maxBoundingRectangle focus) (largestHV rects)
+    Node tree mbr lhv -> case (head' crumbs) of
+      Crumb cmbr clhv before after ->
+        reconstruct (Node
+                     (before >< (focus <| after))
+                     (maximumBR mbr cmbr)
+                     (max lhv clhv) ,
+                     tail' crumbs)
+
+{-
+Calculates the maximum bounding rectangle between two rectangles.
+-}
+maximumBR :: MBR -> MBR -> MBR
+maximumBR (R (ul1x,ul1y) (ll1x,ll1y) (lr1x,lr1y) (ur1x,ur1y))
+  (R (ul2x,ul2y) (ll2x,ll2y) (lr2x,lr2y) (ur2x,ur2y)) =
+  R ((min ul1x ul2x),(max ul1y ul2y)) ((min ll1x ll2x),(min ll1y ll2y))
+  ((max lr1x lr2x),(min lr1y lr2y)) ((max ur1x ur2x),(max ur1y ur2y))
+
+{-
+Returns the maximum bounding rectangles for a given 'HRTree'.
+-}
+maxBoundingRectangle :: HRTree -> Rectangle
+maxBoundingRectangle (Leaf rects _ _) =
+  buildRectangle $ foldl' buildBiggest ((0,0),(0,0)) rects
+maxBoundingRectangle (Node trees _ _) =
+  buildRectangle $ foldl' buildBiggest ((0,0),(0,0)) rects
+  where
+    rects = fmap maxBoundingRectangle trees
+
+{-
+Returns a pair of 'Point's  representing the highest leftmost corner and the
+lowest rightmost corner of the minimum rectangle which contains both rectangles:
+the one represented by the pair of points received, and the one received as a
+rectangle. Useful within a foldl.
+-}
+buildBiggest :: (Point,Point) -> Rectangle -> (Point,Point)
+buildBiggest ((lx,hy),(hx,ly)) r = ((minx,maxy),(maxx,miny))
+  where
+    minx = Prelude.minimum [(fst $ ul r), (fst $ ll r), lx]
+    miny = Prelude.minimum [(snd $ ll r), (snd $ lr r), ly]
+    maxx = Prelude.maximum [(fst $ ur r), (fst $ lr r), hx]
+    maxy = Prelude.maximum [(snd $ ur r), (snd $ ul r), hy]
+
+{-
+Builds a new 'Rectangle' from its highest leftmost corner and its lowest
+rightmost corner.
+-}
+buildRectangle :: (Point,Point) -> Rectangle
+buildRectangle (uple@(lx,hy),lori@(hx,ly)) = R uple (lx,ly) lori (hx,hy)
+
+{-
+Calculates the largest hilbert's value for a given 'Rectangle' Sequence. Assumes
+that the given Sequence is ordered by the hilbert's value.
+-}
+largestHV :: (Seq Rectangle) -> Int
+largestHV recs = hilbert $ last' recs
+
+{-
+Abstraction of the extraction of the lhv from any HRTree constructor
+-}
+getlhv :: HRTree -> LHV
+getlhv (Leaf _ _ l) = l
+getlhv (Node _ _ l) = l
+
+{-
+Abstraction of the extraction of the mbr from any HRTree constructor
+-}
+getMBR :: HRTree -> MBR
+getMBR (Leaf _ m _) = m
+getMBR (Node _ m _) = m
+
+{-
+Wrapper of 'askFromBros' to make the first recursive call.
+-}
+askFromBrothers :: Zipper -> Zipper
+askFromBrothers z = askFromBros z 2
+
+{-
+Rebalances the tree contained on the zipper, by asking HRTrees from the brothers
+of the focused 'HRTRee'. Invokes merging if necessary.
+-}
+askFromBros :: Zipper -> Int  -> Zipper
+askFromBros ( focus , crumbs ) i =
+  if i > 0 then
+    case (head' crumbs) of
+      (Crumb cmbr clhv before after) ->
+        (newHRTree,empty)
+  else
+    (newHRTree,empty)
 
 {-
 Auxiliar function which removes a rectangle from a Zipper on a Leaf.
 It calls for propagating underflow or merging if necessary.
 -}
-remove:: Zipper -> Rectangle -> Zipper
-remove z@(Leaf recs mbr lhv, crumbs) r = (newHRTree, empty)
--- remove z@(Leaf recs mbr lhv, crumbs) r
---   | length newRecs /= 0 = ( Leaf newRecs maxBounding)
-
+remove:: Zipper -> Rectangle -> HRTree
+remove (leaf@(Leaf recs mbr lhv), crumbs) r
+  | S.length newRecs > 0 = reconstruct (newLeaf,crumbs)
+  | otherwise            = reconstruct $ askFromBrothers (leaf,crumbs)
+    where
+      newRecs   = deleteFromSeq recs r
+      newMBR    = maxBoundingRectangle leaf
+      newLHV    = largestHV newRecs
+      newLeaf   = Leaf newRecs mbr lhv
 
 {-Exported API for RTree-}
 
@@ -255,4 +367,4 @@ delete (RTree cl cn t) r = case (delete' (t,empty) r) of
         chooseChild = spanl (\ (Node _ _ lhv) -> lhv < hilbert r)
     delete' z@(Leaf recs mbr lhv, crumbs) r = case (elemIndexL r recs) of
       Nothing -> throwError $ NonExistentRectangleDeletion r
-      Just i  -> return $ reconstruct $ remove z r
+      Just i  -> return $ remove z r
