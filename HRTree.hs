@@ -42,7 +42,7 @@ import Data.Foldable as F
 import Data.Bits
 import Control.Monad.Error
 
-data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Eq, Show)
+data Rectangle = R { ul , ur , ll , lr :: ( Int , Int ) } deriving (Eq, Show)
 
 type LHV = Int
 type MBR = Rectangle
@@ -50,15 +50,74 @@ type Point = ( Int, Int )
 
 data RTree = RTree Int Int HRTree deriving (Show)
 
---data NodeInfo = NI {mbr :: MBR, tree :: HRTree, lhv :: LHV}
---data LeafInfo = LI {rec :: Rectangle, hv :: LHV}
---              deriving(Show)
 data HRTree = Node {tree::(Seq HRTree), mbr :: MBR, lhv :: LHV} 
             | Leaf {recs::(Seq Rectangle), lmbr :: MBR, llhv :: LHV} 
-            deriving(Show)
+            deriving (Show)
+
+--overflow information
+data OvInfo = OvInfo {ov::Either Rectangle HRTree,ovrect::Rectangle}
+              
+newtype CoopS = CoopS (Int,HRTree)
+
+getLHV :: HRTree -> LHV
+getLHV (Node _ _ l) = l
+getLHV (Leaf _ _ l) = l
+
+getOvLHV :: OvInfo -> LHV
+getOvLHV (OvInfo (Right t) _) = getLHV t
+getOvLHV (OvInfo (Left r)  _) = hilbert r
+
+createSon :: HRTree -> HRTree
+createSon (Node sons _ _) =
+  case (S.index sons 0) of
+    (Node _ _ _ ) -> emptyNode
+    (Leaf _ _ _ ) -> emptyLeaf
+
+updateSon :: Int -> OvInfo -> HRTree -> HRTree
+
+updateSon i (OvInfo (Right n) r) parent@(Node t m l) =
+  parent{tree = S.update i newSon (tree parent) }
+  where son@(Node _ _ _) = index t i
+        newGrandSons = S.unstableSort (n <| (tree son))
+        newSon = son{tree=newGrandSons}
+
+updateSon i (OvInfo (Left r) _) parent@(Node t m l) =
+  parent{tree = S.update i newSon (tree parent) }
+  where son@(Leaf _ _ _) = index t i
+        newGrandSons = S.unstableSort (r <| (recs son))
+        newSon = son{recs=newGrandSons}
+
+getGrandSons :: HRTree -> Seq (Seq (Either Rectangle HRTree))
+getGrandSons (Node t _ _ ) = fmap getSons t
+
+getSons :: HRTree -> Seq (Either Rectangle HRTree)
+getSons (Node s _ _) = fmap Right s
+getSons (Leaf s _ _) = fmap Left s
+  
+putIntoSeq :: OvInfo -> Seq (Either Rectangle HRTree)
+putIntoSeq (OvInfo (Left  r) _) = S.empty |> (Left  r)
+putIntoSeq (OvInfo (Right t) _) = S.empty |> (Right t)
+
+emptyMBR :: MBR
+emptyMBR = R (0,0) (0,0) (0,0) (0,0)
+
+just :: Maybe a -> a
+just (Just bla) = bla
+
+right :: Either a b -> b
+right (Right bla) = bla
+
+left :: Either a b -> a
+left (Left bla) = bla
+
+emptyNode :: HRTree
+emptyNode = Node S.empty emptyMBR 0
+
+emptyLeaf :: HRTree
+emptyLeaf = Leaf S.empty emptyMBR 0
 
 isRectangle :: Rectangle -> Bool
-isRectangle r = snd (ul r) > snd (ll r)
+isRectangle r =    snd (ul r) >  snd (ll r)
                 && snd (ur r) >  snd (lr r)
                 && fst (ll r) <  fst (lr r)
                 && fst (ul r) <  fst (ur r)
@@ -69,15 +128,14 @@ isRectangle r = snd (ul r) > snd (ll r)
 
 overlapped :: Rectangle -> Rectangle -> Bool
 overlapped r1 r2 = not $
-                   fst (ul r1) > fst (lr r2)
+                      fst (ul r1) > fst (lr r2)
                    || fst (lr r1) < fst (ul r2)
                    || snd (ul r1) < snd (lr r2)
                    || snd (lr r1) > snd (ul r2)
 
 centroid :: Rectangle -> Point
 centroid r = (((fst (ul r)) + (fst (lr r))) `div` 2,
-              ((snd (ul r)) + (snd (lr r))) `div` 2
-             )
+              ((snd (ul r)) + (snd (lr r))) `div` 2)
 
 hilbertDistance :: (Bits a, Ord a) => Int -> (a,a) -> a
 hilbertDistance d (x,y)
@@ -99,12 +157,24 @@ hilbert r = hilbertDistance 65536 $ centroid r
 
 instance Ord Rectangle where
   r1 < r2 = hilbert r1 < hilbert r2
+  
+instance Eq HRTree where
+  (Node _ _ l1) == (Node _ _ l2) = l1 == l2
+  (Node _ _ l1) == (Leaf _ _ l2) = l1 == l2
+  (Leaf _ _ l1) == (Node _ _ l2) = l1 == l2
+  (Leaf _ _ l1) == (Leaf _ _ l2) = l1 == l2  
+
+instance Ord HRTree where
+  (Node _ _ l1) < (Node _ _ l2) = l1 < l2
+  (Node _ _ l1) < (Leaf _ _ l2) = l1 < l2
+  (Leaf _ _ l1) < (Node _ _ l2) = l1 < l2
+  (Leaf _ _ l1) < (Leaf _ _ l2) = l1 < l2
 
 {-Api del RTree-}
 
 newRTree :: Int -> Int -> RTree
-newRTree cl cn = RTree cl cn $ Leaf empty
-
+newRTree cl cn = RTree cl cn $ Leaf empty (R (0,0) (0,0)
+                                             (0,0) (0,0)) 65335
 
 search :: RTree -> Rectangle -> Maybe [ Rectangle ]
 search (RTree cl cn t) r = case (toList $ auxSearch r t) of
@@ -112,49 +182,94 @@ search (RTree cl cn t) r = case (toList $ auxSearch r t) of
   []       -> Nothing
   where
     auxSearch :: Rectangle -> HRTree -> Seq Rectangle
-    auxSearch r n@(Node _ _ _) = fromList $ F.concatMap
-                                 (\ ni -> toList $ auxSearch r (tree ni)) $
-                                 S.filter verifyOverlap n
-    auxSearch r l@(Leaf _ _) = S.filter (overlapped r) (recs l)
+    auxSearch r n@(Node _ _ _) =
+      fromList $ F.concatMap
+      (\ni -> case ni of
+          (Leaf sons m h) -> toList $ S.filter (overlapped r) sons
+          (Node sons m h) -> Prelude.concat $
+                             map toList $ toList $ fmap (auxSearch r) sons
+      )
+      (S.filter verifyOverlap (tree n))
+    auxSearch r l@(Leaf _ _ _) = S.filter (overlapped r) (recs l)
     verifyOverlap ni = overlapped r (mbr ni)
 
---insert :: RTree -> Rectangle -> Either String (Maybe HRTree,HRTree)
---insert (RTree _cl _cn t) r = insert' t r
--- 
---insert' :: HRTree -> Rectangle -> Either String (Maybe HRTree,HRTree)
---insert' (Leaf rs m h) rect = Right $ (Nothing,Leaf ((LI rect 1) <| sons)) --fix
---insert' (Node sons m h) rect = do
---  (i,node) <- Right $ pickNode sons rect
---  (ov,newnode) <- insert' node rect
---  newsons <- Right $ S.update i newnode sons--missing mrb&lhv update
---  Right $ handleOverFlow (Node newsons m h) ov
--- 
---handleOverFlow :: HRTree -> Maybe HRTree -> (Maybe HRTree, HRTree)
---handleOverFlow t Nothing = (Nothing,t)
---handleOverFlow parent@(Node sons m h) (Just ov) = 
---  where (i,cs) = getCooperatingSibling sons ov 
---        (ov,newparent) = either
---                         (split parent)
---                         ((,) Nothing)
---                         insertNodeIfNotFull parent cs ov
---  
---insertNodeIfNotFull :: HRTree -> HRTree -> HRTree -> Either HRTree HRTree
---insertNodeIfNotFull parent n@(Node sons m h) ov =
---  if (S.length sons) < 2 then
---    Right $ newsons m h
---      where newsons = S.unstableSort (ov <| sons)
---  else
---    Left r
--- 
---split
-                                  
---insertRectIfNotFull :: HRTree -> Rectangle -> Either HRTree HRTree
---insertRectIfNotFull (Leaf sons) r = if (S.length sons) < 2 then
---                                      Right $ S.unstableSort (r <| sons)
---                                    else
---                                      Left r
 
-pickNode:: Seq NodeInfo -> Rectangle -> (Int,NodeInfo)
-pickNode sons r = (1,S.index sons 1)
+insert :: RTree -> Rectangle -> Either String (Maybe OvInfo,HRTree)
+insert (RTree _cl _cn t) r = insert' t r
+ 
+insert' :: HRTree -> Rectangle ->
+           Either String (Maybe OvInfo,HRTree)
+insert' (Leaf rs m h) rect = Right $ (Nothing,Leaf (rect <| rs) m h) --fix 
+insert' (Node sons m h) rect = do
+  (i,node) <- Right $ pickNode sons rect
+  --this can return a NEW son, we have to consider that case in the update that follows
+  (ovinfo,newnode) <- insert' node rect
+  newsons <- Right $ S.update i newnode sons
+  Right $ handleOverFlow (Node newsons m h) ovinfo rect 
+ 
+handleOverFlow :: HRTree -> Maybe OvInfo -> Rectangle ->
+                  (Maybe OvInfo, HRTree)
+handleOverFlow parent Nothing rect = (Nothing,parent) --missing update mbr&lhv
+handleOverFlow parent@(Node sons m h) (Just ovinfo) rect =
+  either
+  (split parent rect) --make split******
+  ((,) Nothing)
+  (insertNodeIfNotFull parent cs ovinfo rect)
+    where cs = getCooperatingSibling parent ovinfo
+          
+insertNodeIfNotFull :: HRTree -> Maybe CoopS ->
+                       OvInfo -> Rectangle ->
+                       --this two recs are for mbr and lhv updating
+                       Either OvInfo HRTree
+insertNodeIfNotFull _ Nothing ovinfo _ = Left ovinfo
+insertNodeIfNotFull parent (Just (CoopS (i,cssons))) ovinfo rect =
+  if (S.length (getSons cssons)) < 2 then
+    Right $ updateSon i ovinfo parent --missing mrb&lhv update
+  else
+    Left ovinfo
+ 
+insertRectIfNotFull :: HRTree -> Rectangle -> Either HRTree HRTree
+insertRectIfNotFull l@(Leaf sons m h) r =
+  if (S.length sons) < 2 then --WIRED
+    Right $ 
+    l{recs = S.unstableSort (r <| sons)}--missing mbr&lhv update
+  else
+    Left l
+    
+getCooperatingSibling :: HRTree -> OvInfo -> Maybe CoopS
+getCooperatingSibling parent@(Node t _ _) ovinfo = 
+  let  biggerThanOvLHV = ((<) (getOvLHV ovinfo)).getLHV in
+  do
+    ind <- S.findIndexL biggerThanOvLHV (tree parent)
+    return $ CoopS (ind,S.index t ind)
 
+--We need to create a new node if necessary
+pickNode:: Seq HRTree -> Rectangle -> (Int,HRTree)
+pickNode sons r = maybe
+                  (S.length sons , createSon (index sons 0))
+                  (\i -> (i,index sons i))
+                  maybeind
+  where biggerThanRectLHV = ((<) (hilbert r)).getLHV
+        maybeind = S.findIndexL biggerThanRectLHV sons
+
+split:: HRTree -> Rectangle -> OvInfo -> (Maybe OvInfo, HRTree)
+split parent rect ovInfo = (Nothing,parent{tree=newSons})
+  where allGrandSons = (putIntoSeq ovInfo) <| (getGrandSons parent)
+        newGrandsons = redistribute (getGrandSons parent) 3 --WIRED
+        newSons = S.zipWith replaceSons (getSons parent) newGrandsons
+
+replaceSons :: Either Rectangle HRTree -> Seq (Either Rectangle HRTree) -> HRTree
+replaceSons (Right son@(Node _ _ _)) t  = son{tree = fmap right t}
+replaceSons (Right son@(Leaf _ _ _)) rs = son{recs = fmap left rs}
+    
+redistribute :: Seq (Seq a) -> Int -> Seq (Seq a)
+redistribute stuffList parts = evenly stuff S.empty
+  where stuff = F.foldl1 (><) stuffList
+        sz = (S.length stuff) `div` parts
+        evenly sequ acc =
+          if (S.null sequ) then
+            acc
+          else
+            evenly (S.drop sz sequ) (acc >< (S.empty |> (S.take sz sequ)))
+  
 --delete :: tree -> Rectangle -> Either e tree
