@@ -187,11 +187,9 @@ updateSon i (Left r) parent@(Node t m l) =
         newSon = son{recs=newGrandSons}
 
 updateMBRLHV :: HRTree -> HRTree
-
 updateMBRLHV (Node t m l) = (Node t newm newl)
   where newm = F.foldl' sumRects emptyMBR (fmap getMBR t)
         newl = F.foldl' max 0 (fmap getLHV t)
-
 updateMBRLHV (Leaf t m l) = (Leaf t newm newl)
   where newm = F.foldl' sumRects emptyMBR t
         newl = F.foldl' max 0 (fmap hilbert t)
@@ -360,6 +358,9 @@ maxBoundingRectangle (Node trees _ _) =
   where
     rects = fmap maxBoundingRectangle trees
 
+maxBoundRect :: (Seq Rectangle) -> Rectangle
+maxBoundRect seq = buildRectangle $ foldl' buildBiggest ((0,0),(0,0)) seq
+
 {-
 Returns a pair of 'Point's  representing the highest leftmost corner and the
 lowest rightmost corner of the minimum rectangle which contains both rectangles:
@@ -406,16 +407,109 @@ getMBR (Node _ m _) = m
 Rebalances the tree contained on the zipper, by asking HRTrees from the brothers
 of the focused 'HRTRee'. Invokes merging if necessary.
 -}
-askFromBrothers :: Zipper -> Zipper
-askFromBrothers z@( Leaf recs lmbr llhv , crumbs ) =
+askFromBrothers :: Zipper -> (Zipper,Bool)
+askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
   case (head' crumbs) of
     (Crumb cmbr clhv before after) ->
-      (newHRTree,empty)
-askFromBrothers z@( Node trees mbr lhv , crumbs ) =
-  case (head' crumbs) of
-    (Crumb cmbr clhv before after) ->
-      (newHRTree,empty)
-      --merge z i
+      case (ask2Left before) of
+        (newBfr,brosL,numL) ->
+          if numL < 2 then
+            case (ask2Right brosL (2-numL) after) of
+              (newAftr,bros,num) -> case (evenlyDistribute $ getSeqRecs bros) of
+                (readyBros,True)  ->
+                  askFromBrothers (newFocus , tail' crumbs)
+                    where
+                      newSons  = (newBfr >< newAftr)
+                      newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
+                (readyBros,False) ->
+                  ((newFocus,newCrumbs), False)
+                  where
+                    newFocus  = head' readyBros
+                    newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
+                    newCrumbs = newCrumb <| (tail' crumbs)
+                    newAfter  = ((tail' readyBros) >< newAftr)
+                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
+                    newMBR    = mbr newNode
+                    newLHV    = lhv newNode
+          else
+            case (evenlyDistribute $ getSeqRecs brosL) of
+              (readyBros,True)  ->
+                askFromBrothers (newFocus , tail' crumbs)
+                  where
+                    newSons  = (newBfr >< after)
+                    newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
+              (readyBros,False) ->
+                ((newFocus,newCrumbs), False)
+                  where
+                    newFocus  = head' readyBros
+                    newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
+                    newCrumbs = newCrumb <| (tail' crumbs)
+                    newAfter  = ((tail' readyBros) >< after)
+                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
+                    newMBR    = mbr newNode
+                    newLHV    = lhv newNode
+askFromBrothers z@( Node trees mbr lhv , crumbs ) = ((newHRTree,empty),False)
+
+
+evenlyDistribute :: (Seq Rectangle) -> ((Seq HRTree),Bool)
+evenlyDistribute seq =
+  if S.null seq then
+    (empty,True)
+  else if S.length seq == 1 then
+    (first <| empty, False)
+  else if S.length seq == 2 then
+    (first <| second <| empty, False)
+  else
+    (foldl'
+     (\ seqTree seqRec ->
+       seqTree |> (Leaf seqRec (maxBoundRect seqRec) (largestHV seqRec)))
+     empty (clusterize 3 seq),False)
+      where
+        first  = Leaf (singleton $ head' seq) (head' seq) (hilbert $ head' seq)
+        second = Leaf (singleton $ last' seq) (last' seq) (hilbert $ last' seq)
+
+clusterize :: Int -> (Seq a) -> (Seq (Seq a))
+clusterize numPieces sequence =
+  clusterize' numPieces sizeOfPieces sequence
+    where
+      clusterize' pieces size seq =
+        if pieces < 2 then singleton seq else
+          case (S.null seq) of
+            False ->
+              recursive
+                where
+                  tuple     = S.splitAt size seq
+                  cluster   = fst tuple
+                  remainder = snd tuple
+                  recursive = cluster <| (clusterize' (pieces-1) size remainder)
+            True -> empty
+      sizeOfPieces = ((S.length sequence) `div` numPieces) + extraSize
+      extraSize = if ((S.length sequence) `mod` numPieces) > 0 then 1 else 0
+
+getSeqRecs :: (Seq HRTree) -> (Seq Rectangle)
+getSeqRecs sec = F.foldl1 (><) (fmap recs sec)
+
+ask2Left :: (Seq HRTree) -> (Seq HRTree,(Seq HRTree),Int)
+ask2Left seq = foldr' pick (empty,empty,0) seq
+  where
+    pick bro (newBefore,bros,num) =
+      if num < 2 then
+        (newBefore, bro <| bros,num + 1)
+      else
+        (bro <| newBefore,bros,num)
+
+ask2Right :: (Seq HRTree) -> Int -> (Seq HRTree)
+              -> (Seq HRTree,(Seq HRTree),Int)
+ask2Right brosL numL seq = foldl' pick (empty,brosL,numL) seq
+  where
+    pick (newBefore,bros,num) bro =
+      if num < 2 then
+        (newBefore, bros |> bro,num + 1)
+      else
+        (newBefore |> bro,bros,num)
+
 
 {-
 Auxiliar function which removes a rectangle from a Zipper on a Leaf.
@@ -424,7 +518,7 @@ It calls for propagating underflow or merging if necessary.
 remove:: Zipper -> Rectangle -> HRTree
 remove (leaf@(Leaf recs mbr lhv), crumbs) r
   | S.length newRecs > 0 = reconstruct (newLeaf,crumbs)
-  | otherwise            = reconstruct $ askFromBrothers (leaf,crumbs)
+  | otherwise            = reconstruct $ fst $ askFromBrothers (leaf,crumbs)
     where
       newRecs   = deleteFromSeq recs r
       newMBR    = maxBoundingRectangle leaf
@@ -526,7 +620,6 @@ pickNode sons r = maybe
   where biggerThanRectLHV = ((<) (hilbert r)).getLHV
         maybeind = S.findIndexL biggerThanRectLHV sons
 
-
 split:: HRTree -> Rectangle -> OvInfo -> (Maybe OvInfo, HRTree)
 split parent rect ovInfo = if (S.length newSons <= 2) then --WIRED
                              (Nothing,updateMBRLHV parent{tree=newSons})
@@ -572,7 +665,7 @@ delete :: RTree             -- ^ @RTree@ where thedeletion will be performed.
                             --   (if necessary).
 delete (RTree cl cn t) r = case (delete' (t,empty) r) of
   Left e -> Left $ error (show e)
-  Right t -> return $ RTree cl cn t
+  Right t -> Right $ RTree cl cn t
   where
     delete' :: Zipper -> Rectangle -> Either RTreeError HRTree
     delete' (Node trees mbr lhv, crumbs) r = delete' ( focus , trail ) r
