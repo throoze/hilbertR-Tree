@@ -34,6 +34,12 @@ Reference to the paper:
 module RTree
        (
          Rectangle(..), RTree(..),
+         -- * Rectangle Manipulation
+         emptyRectangle,  -- :: Rectangle
+         isRectangle,     -- :: Rectangle -> Bool
+         overlapped,      -- :: Rectangle -> Rectangle -> Bool
+         centroid,        -- :: Rectangle -> Point
+         hilbert,         -- :: Rectangle -> Int
          -- * Construction
          newRTree,       -- :: Int -> Int -> RTree
          -- * Insertion
@@ -77,16 +83,16 @@ data HRTree = Node {tree::(Seq HRTree), mbr :: MBR, lhv :: LHV}
 data Crumb = Crumb MBR LHV (Seq HRTree) (Seq HRTree)
 type Zipper = ( HRTree , (Seq Crumb) )
 
-{-
-Creates a new empty meaningless Rectangle.
--}
-emptyRectangle :: Rectangle
+
+-- | Creates a new empty meaningless Rectangle.
+emptyRectangle :: Rectangle -- ^ An empty degenerated rectangle.
 emptyRectangle = R (0,0) (0,0) (0,0) (0,0)
 
-{-
-Checks if a 'Rectangle' structure represents indeed a rectangle.
--}
-isRectangle :: Rectangle -> Bool
+
+-- | Checks if a 'Rectangle' structure represents indeed a rectangle.
+isRectangle :: Rectangle -- ^ The 'Rectangle' to check
+               -> Bool   -- ^ /True/ if the structure represents a real
+                         --   rectangle. /False/ otherwise.
 isRectangle r = snd (ul r) > snd (ll r)
                 && snd (ur r) >  snd (lr r)
                 && fst (ll r) <  fst (lr r)
@@ -96,20 +102,22 @@ isRectangle r = snd (ul r) > snd (ll r)
                 && fst (ll r) == fst (ul r)
                 && fst (lr r) == fst (ur r)
 
-{-
-Checks if two rectangles are overlapped.
--}
-overlapped :: Rectangle -> Rectangle -> Bool
+
+-- | Checks if two rectangles are overlapped.
+overlapped :: Rectangle    -- ^ First Rectagle to check
+              -> Rectangle -- ^ Second Rectangle to check
+              -> Bool      -- ^ /True/ if the two rectangles overlap, /False/
+                           --   otherwise.
 overlapped r1 r2 = not $
                    fst (ul r1) > fst (lr r2)
                    || fst (lr r1) < fst (ul r2)
                    || snd (ul r1) < snd (lr r2)
                    || snd (lr r1) > snd (ul r2)
 
-{-
-Calculates the centroid of a 'Rectangle'.
--}
-centroid :: Rectangle -> Point
+
+-- | Calculates the centroid of a 'Rectangle'.
+centroid :: Rectangle -- ^ A Rectangle
+            -> Point  -- ^ Centroid of the 'Rectangle' passed.
 centroid r = (((fst (ul r)) + (fst (lr r))) `div` 2,
               ((snd (ul r)) + (snd (lr r))) `div` 2
              )
@@ -132,10 +140,10 @@ hilbertDistance d (x,y)
               (_, _)   -> step (result + area * 2) (x - side) (y - side)
               where step = dist (side `shiftR` 1) (area `shiftR` 2)
 
-{-
-Calculates the hilbert's value of the centroid of a 'Rectangle'
--}
-hilbert :: Rectangle -> Int
+-- | Calculates the hilbert's value of the centroid of a 'Rectangle'
+hilbert :: Rectangle -- ^ A rectangle
+           -> Int    -- ^ The hilbert's value of the centroid of the Rectangle
+                     --   passed.
 hilbert r = hilbertDistance 65536 $ centroid r
 
 {-
@@ -303,23 +311,19 @@ getMBR (Leaf _ m _) = m
 getMBR (Node _ m _) = m
 
 {-
-Wrapper of 'askFromBros' to make the first recursive call.
--}
-askFromBrothers :: Zipper -> Zipper
-askFromBrothers z = askFromBros z 2
-
-{-
 Rebalances the tree contained on the zipper, by asking HRTrees from the brothers
 of the focused 'HRTRee'. Invokes merging if necessary.
 -}
-askFromBros :: Zipper -> Int  -> Zipper
-askFromBros ( focus , crumbs ) i =
-  if i > 0 then
-    case (head' crumbs) of
-      (Crumb cmbr clhv before after) ->
-        (newHRTree,empty)
-  else
-    (newHRTree,empty)
+askFromBrothers :: Zipper -> Zipper
+askFromBrothers z@( Leaf recs lmbr llhv , crumbs ) =
+  case (head' crumbs) of
+    (Crumb cmbr clhv before after) ->
+      (newHRTree,tail)
+askFromBrothers z@( Node trees mbr lhv , crumbs ) =
+  case (head' crumbs) of
+    (Crumb cmbr clhv before after) ->
+      (newHRTree,empty)
+      --merge z i
 
 {-
 Auxiliar function which removes a rectangle from a Zipper on a Leaf.
