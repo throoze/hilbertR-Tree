@@ -54,18 +54,18 @@ import Data.Sequence as S
 import Data.Foldable as F
 import Data.Bits
 import Control.Monad.Error
---import Graphics.HGL as G
+import Graphics.HGL as G
 
 -- | General representation of a rectangle.
 data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Show)
 
 -- Establish the Rectanles order relation by comparing them on their centroid
 -- hilbert's value.
-instance Ord Rectangle where
-  r1 < r2 = hilbert r1 < hilbert r2
-
 instance Eq Rectangle where
   r1 == r2 = (hilbert r1) == (hilbert r2)
+
+instance Ord Rectangle where
+  r1 <= r2 = (hilbert r1) <= (hilbert r2)
 
 instance Eq HRTree where
   (Node _ _ l1) == (Node _ _ l2) = l1 == l2
@@ -74,10 +74,10 @@ instance Eq HRTree where
   (Leaf _ _ l1) == (Leaf _ _ l2) = l1 == l2
 
 instance Ord HRTree where
-  (Node _ _ l1) < (Node _ _ l2) = l1 < l2
-  (Node _ _ l1) < (Leaf _ _ l2) = l1 < l2
-  (Leaf _ _ l1) < (Node _ _ l2) = l1 < l2
-  (Leaf _ _ l1) < (Leaf _ _ l2) = l1 < l2
+  (Node _ _ l1) <= (Node _ _ l2) = l1 <= l2
+  (Node _ _ l1) <= (Leaf _ _ l2) = l1 <= l2
+  (Leaf _ _ l1) <= (Node _ _ l2) = l1 <= l2
+  (Leaf _ _ l1) <= (Leaf _ _ l2) = l1 <= l2
 
 -- Some convenience aliases and constructors
 type LHV = Int
@@ -105,7 +105,7 @@ type Zipper = ( HRTree , (Seq Crumb) )
 
 
 -- | Creates a new empty meaningless Rectangle.
-emptyRectangle :: Rectangle -- ^ An empty degenerated rectangle.
+emptyRectangle :: Rectangle -- ^ An empty degenerate rectangle.
 emptyRectangle = R (0,0) (0,0) (0,0) (0,0)
 
 
@@ -135,7 +135,7 @@ overlapped r1 r2 = not $
 
 -- | Calculates the centroid of a 'Rectangle'.
 centroid :: Rectangle -- ^ A Rectangle
-            -> Point  -- ^ Centroid of the 'Rectangle' passed.
+            -> RTree.Point  -- ^ Centroid of the 'Rectangle' passed.
 centroid r = (((fst (ul r)) + (fst (lr r))) `div` 2,
               ((snd (ul r)) + (snd (lr r))) `div` 2
              )
@@ -260,7 +260,7 @@ instance Show RTreeError where
 Convinience function that creates a new empty 'RTree'
 -}
 newHRTree :: HRTree
-newHRTree = Leaf empty emptyRectangle 0
+newHRTree = Leaf empty emptyMBR 0
 
 {- Convinience functions on 'Seq's -}
 
@@ -350,7 +350,7 @@ maximumBR (R (ul1x,ul1y) (ll1x,ll1y) (lr1x,lr1y) (ur1x,ur1y))
   ((max lr1x lr2x),(min lr1y lr2y)) ((max ur1x ur2x),(max ur1y ur2y))
 
 {-
-Returns the maximum bounding rectangles for a given 'HRTree'.
+Returns the maximum bounding rectangles for a given 'HRTree'
 -}
 maxBoundingRectangle :: HRTree -> Rectangle
 maxBoundingRectangle (Leaf rects _ _) =
@@ -366,7 +366,7 @@ lowest rightmost corner of the minimum rectangle which contains both rectangles:
 the one represented by the pair of points received, and the one received as a
 rectangle. Useful within a foldl.
 -}
-buildBiggest :: (Point,Point) -> Rectangle -> (Point,Point)
+buildBiggest :: (RTree.Point,RTree.Point) -> Rectangle -> (RTree.Point,RTree.Point)
 buildBiggest ((lx,hy),(hx,ly)) r = ((minx,maxy),(maxx,miny))
   where
     minx = Prelude.minimum [(fst $ ul r), (fst $ ll r), lx]
@@ -378,7 +378,7 @@ buildBiggest ((lx,hy),(hx,ly)) r = ((minx,maxy),(maxx,miny))
 Builds a new 'Rectangle' from its highest leftmost corner and its lowest
 rightmost corner.
 -}
-buildRectangle :: (Point,Point) -> Rectangle
+buildRectangle :: (RTree.Point,RTree.Point) -> Rectangle
 buildRectangle (uple@(lx,hy),lori@(hx,ly)) = R uple (lx,ly) lori (hx,hy)
 
 {-
@@ -451,19 +451,23 @@ search (RTree cl cn t) r = case (toList $ auxSearch r t) of
     verifyOverlap ni = overlapped r (mbr ni)
 
 insert :: RTree -> Rectangle -> Either String RTree
-insert (RTree cl cn t) r = do
+insert (RTree cl cn t) r = 
+  let ovnode ov = (either
+                   (\r -> updateMBRLHV (Leaf (S.empty |> r) emptyMBR 0))
+                   (\n -> updateMBRLHV (Node (S.empty |> n) emptyMBR 0)) ov) in
+  do
    (maybeov,newt) <- insert' t r
    newSons <- Right $
-              maybe newt (\ov->(Node (S.empty|>newt|>(right ov)) emptyMBR 0))
+              maybe newt (\ov->updateMBRLHV (Node (S.empty|>newt|>(ovnode ov)) emptyMBR 0))
               maybeov
    Right $ RTree cl cn newSons
 
 
 insert' :: HRTree -> Rectangle ->
            Either String (Maybe OvInfo,HRTree)
-insert' (Leaf rs m h) r =
-  let (xs :> bla) = viewr rs
-      newRecs1 = updateMBRLHV (Leaf (S.unstableSort (r <| xs)) m h)
+insert' (Leaf rs m h) r = --missing error throw
+  let (xs :> bla) = viewr (S.unstableSort (r<|rs))
+      newRecs1 = updateMBRLHV (Leaf xs m h)
       newRecs2 = updateMBRLHV (Leaf (S.unstableSort (r <| rs)) m h) in
   if ((S.length rs) >= 3) then
     Right $ ((Just (Left bla)) , newRecs1)
@@ -472,9 +476,11 @@ insert' (Leaf rs m h) r =
 
 insert' (Node sons m h) rect = do
   (i,node) <- Right $ pickNode sons rect
-  --this can return a NEW son, we have to consider that case in the update that follows
-  (ovinfo,newnode) <- insert' node rect
-  newsons <- Right $ S.update i newnode sons
+  (ovinfo,newnode) <- insert' node rect  
+  newsons <- if((S.length sons) > i) then
+               Right $ S.update i newnode sons
+             else
+               Right $ sons |> newnode
   Right $ handleOverFlow (Node newsons m h) ovinfo rect
 
 
@@ -572,7 +578,7 @@ delete :: RTree             -- ^ @RTree@ where thedeletion will be performed.
                             --   (if necessary).
 delete (RTree cl cn t) r = case (delete' (t,empty) r) of
   Left e -> Left $ error (show e)
-  Right t -> return $ RTree cl cn t
+  Right t -> Right $ RTree cl cn t
   where
     delete' :: Zipper -> Rectangle -> Either RTreeError HRTree
     delete' (Node trees mbr lhv, crumbs) r = delete' ( focus , trail ) r
@@ -588,54 +594,82 @@ delete (RTree cl cn t) r = case (delete' (t,empty) r) of
 
 {- Graphic tools to show trees -}
 
--- winSize :: Int
--- winSize = 700
 
--- showTree :: RTree -> IO ()
--- showTree (RTree cl cn hrtree) = do
---   putStr("Max recs in leafs: ")
---   putStrLn(show(cl))
---   putStr("Max sons in nodes: ")
---   putStrLn(show(cn))
---   G.runGraphics (
---     G.withWindow_ "Ugly tree" (winSize, winSize) $
---     (\w -> do
---         showTree' w hrtree
---         G.getKey w)
---     )
+winSize :: Int
+winSize = 700                  
 
--- drawRectangle :: G.Window -> Rectangle -> IO ()
--- drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
---   where  ulx = (ulxB * winSize) `div` 65335
---          uly = (ulyB * winSize) `div` 65335
---          lrx = (lrxB * winSize) `div` 65335
---          lry = (lryB * winSize) `div` 65335
---          r = (G.line (ulx,uly) (lrx,uly)): --top
---              (G.line (lrx,uly) (lrx,lry)): --right
---              (G.line (lrx,lry) (ulx,lry)): --bottom
---              [(G.line (ulx,lry) (ulx,uly))]  --left
+showTree :: RTree -> IO ()
+showTree (RTree cl cn hrtree) = do
+  putStr("Max recs in leafs: ")
+  putStrLn(show(cl))
+  putStr("Max sons in nodes: ")
+  putStrLn(show(cn))
+  G.runGraphics (
+    G.withWindow_ "Ugly tree" (winSize, winSize) $
+    (\w -> do
+        showTree' w hrtree
+        G.getKey w)
+    )
 
--- showTree' :: G.Window -> HRTree -> IO ()
--- showTree' w (Node sons mbr _) = do
---   drawRectangle w mbr
---   F.mapM_ (showTree' w) sons
--- showTree' w (Leaf rs mbr _) = do
---   drawRectangle w mbr
---   F.mapM_ (drawRectangle w) rs
+drawRectangle :: G.Window -> Rectangle -> IO ()
+drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
+  where  ulx = (ulxB * winSize) `div` 65335
+         uly = (ulyB * winSize) `div` 65335
+         lrx = (lrxB * winSize) `div` 65335
+         lry = (lryB * winSize) `div` 65335
+         r = (G.line (ulx,uly) (lrx,uly)): --top
+             (G.line (lrx,uly) (lrx,lry)): --right
+             (G.line (lrx,lry) (ulx,lry)): --bottom
+             [(G.line (ulx,lry) (ulx,uly))]  --left
 
--- runTest :: IO ()
--- runTest = do
---   ini <- return (newRTree 2 3)
---   test <- return (do
---                      a1 <- insert ini R{ul=(40000,45000), ur=(50000,45000),
---                                         ll=(40000,60000), lr=(50000,60000)}
---                      a2 <- insert a1  R{ul=(20000,20000), ur=(25000,20000),
---                                         ll=(20000,25000), lr=(25000,25000)}
---                      a3 <- insert a2  R{ul=(50000,50000), ur=(65000,50000),
---                                         ll=(50000,60000), lr=(65000,60000)}
---                      a4 <- insert a3  R{ul=(1000 ,1000) , ur=(10000,1000),
---                                         ll=(1000 ,10000), lr=(10000,10000)}
---                      return a2
---                  )
---   putStrLn(show test)
---   either putStrLn showTree test
+drawMBR :: G.Window -> Rectangle -> IO ()
+drawMBR w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
+  where  ulx = ((ulxB-300) * winSize) `div` 65335
+         uly = ((ulyB-300) * winSize) `div` 65335
+         lrx = ((lrxB+300) * winSize) `div` 65335
+         lry = ((lryB+300) * winSize) `div` 65335
+         r = withColor (Red) (G.line (ulx,uly) (lrx,uly)): --top
+             withColor (Red) (G.line (lrx,uly) (lrx,lry)): --right
+             withColor (Red)(G.line (lrx,lry) (ulx,lry)): --bottom
+             [withColor (Red) (G.line (ulx,lry) (ulx,uly))]  --left
+
+showTree' :: G.Window -> HRTree -> IO ()
+showTree' w (Node sons mbr _) = do
+  drawMBR w mbr
+  F.mapM_ (showTree' w) sons
+showTree' w (Leaf rs mbr _) = do
+  drawMBR w mbr
+  F.mapM_ (drawRectangle w) rs
+
+r1 = R{ul=(1000 ,1000) , ur=(10000,1000),
+       ll=(1000 ,10000), lr=(10000,10000)}
+     
+r2 = R{ul=(4000,4500), ur=(5000,4000),
+       ll=(4000,6000), lr=(5000,6000)}
+
+r4 = R{ul=(2000,2000), ur=(2500,2000),
+       ll=(2000,2500), lr=(2500,2500)}
+
+r5 = R{ul=(12000,12000), ur=(12500,12000),
+       ll=(12000,12500), lr=(12500,12500)}
+     
+r3 = R{ul=(50000,50000), ur=(65536,50000),
+       ll=(50000,65536), lr=(65536,65536)}
+
+r6 = R{ul=(40000,40000), ur=(65536,40000),
+       ll=(40000,65536), lr=(65536,65536)}
+      
+runTest :: IO ()
+runTest = do
+  ini <- return (newRTree 2 3)
+  test <- return (do
+                     a1 <- insert ini r1
+                     a2 <- insert a1 r2
+                     a3 <- insert a2 r4
+                     a4 <- insert a3 r3
+                     a5 <- insert a4 r5
+                     a6 <- insert a5 r6
+                     return a6
+                 )
+  putStrLn(show test)
+  either putStrLn showTree test
