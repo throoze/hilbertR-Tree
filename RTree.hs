@@ -55,9 +55,10 @@ import Data.Foldable as F
 import Data.Bits
 import Control.Monad.Error
 import Graphics.HGL as G
+import System.IO
 
 -- | General representation of a rectangle.
-data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Show)
+data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } --deriving (Show)
 
 -- Establish the Rectanles order relation by comparing them on their centroid
 -- hilbert's value.
@@ -97,7 +98,14 @@ capacity, on creating a new 'RTree'.
 -}
 data HRTree = Node {tree::(Seq HRTree), mbr :: MBR, lhv :: LHV}
             | Leaf {recs::(Seq Rectangle), lmbr :: MBR, llhv :: LHV}
-            deriving(Show)
+            --deriving(Show)
+
+instance Show HRTree where
+  show (Node t _ _) = "N ["++show (F.concat (fmap show t))++"]"
+  show (Leaf t _ _) = "L ["++show (F.concat (fmap show t))++"]"
+
+instance Show Rectangle where
+  show (R _ _ _ _) = "R "
 
 -- Internal model for applying the Zipper technique.
 data Crumb = Crumb MBR LHV (Seq HRTree) (Seq HRTree)
@@ -452,69 +460,61 @@ search (RTree cl cn t) r = case (toList $ auxSearch r t) of
 
 insert :: RTree -> Rectangle -> Either String RTree
 insert (RTree cl cn t) r = 
-  let ovnode ov = (either
-                   (\r -> updateMBRLHV (Leaf (S.empty |> r) emptyMBR 0))
-                   (\n -> updateMBRLHV (Node (S.empty |> n) emptyMBR 0)) ov) in
+  let newson ov =
+        (either
+         (\r -> updateMBRLHV (Leaf (S.empty |> r) emptyMBR 0))
+         (\n -> updateMBRLHV (Node (S.empty |> n) emptyMBR 0)) ov) in
   do
-   (maybeov,newt) <- insert' t r
+   (maybeov,newt) <- insert' t r cl cn
    newSons <- Right $
-              maybe newt (\ov->updateMBRLHV (Node (S.empty|>newt|>(ovnode ov)) emptyMBR 0))
+              maybe newt (\ov->updateMBRLHV (Node (S.empty|>newt|>(newson ov)) 
+                                             emptyMBR 0))
               maybeov
    Right $ RTree cl cn newSons
 
 
-insert' :: HRTree -> Rectangle ->
+insert' :: HRTree -> Rectangle -> Int -> Int ->
            Either String (Maybe OvInfo,HRTree)
-insert' (Leaf rs m h) r = --missing error throw
-  let (xs :> bla) = viewr (S.unstableSort (r<|rs))
-      newRecs1 = updateMBRLHV (Leaf xs m h)
-      newRecs2 = updateMBRLHV (Leaf (S.unstableSort (r <| rs)) m h) in
-  if ((S.length rs) >= 3) then
+insert' (Leaf rs m h) r cl cn = do
+  maybe (Right 0) (\_ -> Left "Ahhhh") (S.elemIndexL r rs)
+  if ((S.length rs) >= cl) then
     Right $ ((Just (Left bla)) , newRecs1)
-  else
+    else
     Right $ (Nothing , newRecs2)
+  where (xs :> bla) = viewr (S.unstableSort (r<|rs))
+        newRecs1 = updateMBRLHV (Leaf xs m h)
+        newRecs2 = updateMBRLHV (Leaf (S.unstableSort (r <| rs)) m h)
 
-insert' (Node sons m h) rect = do
+insert' (Node sons m h) rect cl cn = do
   (i,node) <- Right $ pickNode sons rect
-  (ovinfo,newnode) <- insert' node rect  
+  (ovinfo,newnode) <- insert' node rect cl cn
   newsons <- if((S.length sons) > i) then
                Right $ S.update i newnode sons
              else
                Right $ sons |> newnode
-  Right $ handleOverFlow (Node newsons m h) ovinfo rect
+  Right $ handleOverFlow (Node newsons m h) ovinfo rect cn
 
 
-handleOverFlow :: HRTree -> Maybe OvInfo -> Rectangle ->
+handleOverFlow :: HRTree -> Maybe OvInfo -> Rectangle -> Int ->
                   (Maybe OvInfo, HRTree)
-handleOverFlow parent Nothing rect = (Nothing,updateMBRLHV parent)
-handleOverFlow parent@(Node sons m h) (Just ovinfo) rect =
+handleOverFlow parent Nothing rect cn = (Nothing,updateMBRLHV parent)
+handleOverFlow parent@(Node sons m h) (Just ovinfo) rect cn =
   either
-  (split parent rect)
+  (split cn parent rect)
   ((,) Nothing)
-  (insertNodeIfNotFull parent cs ovinfo rect)
+  (insertNodeIfNotFull parent cs ovinfo cn)
     where cs = getCooperatingSibling (updateMBRLHV parent) ovinfo
 
 
 insertNodeIfNotFull :: HRTree -> Maybe CoopS ->
-                       OvInfo -> Rectangle ->
-                       --this two recs are for mbr and lhv updating
+                       OvInfo -> Int ->
                        Either OvInfo HRTree
 insertNodeIfNotFull _ Nothing ovinfo _ = Left ovinfo
-insertNodeIfNotFull parent (Just (CoopS (i,cs))) ovinfo rect =
-  if (S.length (getSons cs)) < 2 then
+insertNodeIfNotFull parent (Just (CoopS (i,cs))) ovinfo cn =
+  if (S.length (getSons cs)) < cn then --Wired
     Right $ updateSon i ovinfo (updateMBRLHV parent)
   else
     Left ovinfo
-
-
-insertRectIfNotFull :: HRTree -> Rectangle -> Either HRTree HRTree
-insertRectIfNotFull l@(Leaf sons m h) r =
-  if (S.length sons) < 2 then --WIRED
-    Right $
-    updateMBRLHV l{recs = S.unstableSort (r <| sons)}
-  else
-    Left l
-
 
 getCooperatingSibling :: HRTree -> OvInfo -> Maybe CoopS
 getCooperatingSibling parent@(Node t _ _) ovinfo =
@@ -533,14 +533,15 @@ pickNode sons r = maybe
         maybeind = S.findIndexL biggerThanRectLHV sons
 
 
-split:: HRTree -> Rectangle -> OvInfo -> (Maybe OvInfo, HRTree)
-split parent rect ovInfo = if (S.length newSons <= 2) then --WIRED
-                             (Nothing,updateMBRLHV parent{tree=newSons})
-                           else
-                             let xs :> a = viewr newSons in
-                             (Just (Right a),updateMBRLHV parent{tree=xs})
+split:: Int -> HRTree -> Rectangle -> OvInfo -> (Maybe OvInfo, HRTree)
+split cn parent rect ovInfo =
+  if (S.length newSons <= cn) then --WIRED
+    (Nothing,updateMBRLHV parent{tree=newSons})
+  else
+    let xs :> a = viewr newSons in
+    (Just (Right a),updateMBRLHV parent{tree=xs})
   where allGrandSons = (putIntoSeq ovInfo) <| (getGrandSons parent)
-        newGrandsons = redistribute (getGrandSons parent) 3 --WIRED
+        newGrandsons = redistribute (getGrandSons parent) 3
         newSons = S.zipWith replaceSons (getSons parent) newGrandsons
 
 
@@ -552,7 +553,8 @@ replaceSons (Right son@(Leaf _ _ _)) rs = son{recs = fmap left rs}
 redistribute :: Seq (Seq a) -> Int -> Seq (Seq a)
 redistribute stuffList parts = evenly stuff S.empty
   where stuff = F.foldl1 (><) stuffList
-        sz = (S.length stuff) `div` parts
+        m = max 1 ((S.length stuff) `mod` parts)
+        sz = m + ((S.length stuff) `div` parts)
         evenly sequ acc =
           if (S.null sequ) then
             acc
@@ -596,7 +598,10 @@ delete (RTree cl cn t) r = case (delete' (t,empty) r) of
 
 
 winSize :: Int
-winSize = 700                  
+winSize = 900
+
+recsSize :: Int
+recsSize = 12000 --65536
 
 showTree :: RTree -> IO ()
 showTree (RTree cl cn hrtree) = do
@@ -613,10 +618,10 @@ showTree (RTree cl cn hrtree) = do
 
 drawRectangle :: G.Window -> Rectangle -> IO ()
 drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
-  where  ulx = (ulxB * winSize) `div` 65335
-         uly = (ulyB * winSize) `div` 65335
-         lrx = (lrxB * winSize) `div` 65335
-         lry = (lryB * winSize) `div` 65335
+  where  ulx = (ulxB * winSize) `div` recsSize 
+         uly = (ulyB * winSize) `div` recsSize 
+         lrx = (lrxB * winSize) `div` recsSize 
+         lry = (lryB * winSize) `div` recsSize 
          r = (G.line (ulx,uly) (lrx,uly)): --top
              (G.line (lrx,uly) (lrx,lry)): --right
              (G.line (lrx,lry) (ulx,lry)): --bottom
@@ -624,10 +629,10 @@ drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) 
 
 drawMBR :: G.Window -> Rectangle -> IO ()
 drawMBR w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
-  where  ulx = ((ulxB-300) * winSize) `div` 65335
-         uly = ((ulyB-300) * winSize) `div` 65335
-         lrx = ((lrxB+300) * winSize) `div` 65335
-         lry = ((lryB+300) * winSize) `div` 65335
+  where  ulx = ((ulxB-50) * winSize) `div` recsSize 
+         uly = ((ulyB-50) * winSize) `div` recsSize 
+         lrx = ((lrxB+50) * winSize) `div` recsSize 
+         lry = ((lryB+50) * winSize) `div` recsSize 
          r = withColor (Red) (G.line (ulx,uly) (lrx,uly)): --top
              withColor (Red) (G.line (lrx,uly) (lrx,lry)): --right
              withColor (Red)(G.line (lrx,lry) (ulx,lry)): --bottom
@@ -659,17 +664,48 @@ r3 = R{ul=(50000,50000), ur=(65536,50000),
 r6 = R{ul=(40000,40000), ur=(65536,40000),
        ll=(40000,65536), lr=(65536,65536)}
       
+t1 = R{ur=(2339,5422),lr=(2339,5447),ll=(1876,5447),ul=(1876,5422)}
+t2 = R{ur=(6654,6324),lr=(6654,6299),ll=(7084,6299),ul=(7084,6324)}
+t3 = R{ur=(8058,6474),lr=(8058,6354),ll=(8083,6354),ul=(8083,6474)}
+t4 = R{ur=(5921,7096),lr=(5921,7071),ll=(6125,7071),ul=(6125,7096)}
+
+runTest2 :: String -> IO ()
+runTest2 filename = do
+  fileHandle <- openFile filename ReadMode
+  bigString <- hGetContents fileHandle
+  recsLines <- return $ lines bigString
+  recs <- return $ map decode $! recsLines
+  ini <- return (newRTree 10 10)
+  test <- return $ processRecs (Right ini) $! recs
+  putStrLn(bigString)
+  putStrLn(show test)
+  either putStrLn showTree test
+  
+decode :: String -> Rectangle
+decode recStr = R{ur=(urx,ury),lr=(lrx,lry),ll=(llx,lly),ul=(ulx,uly)}
+  where (urx:ury:lrx:lry:llx:lly:ulx:uly:xs) = map read $ words $ map commasToWthLn recStr
+
+commasToWthLn :: Char -> Char
+commasToWthLn ',' = ' '
+commasToWthLn c = c
+
+processRecs :: Either String RTree -> [Rectangle] -> Either String RTree
+processRecs tree []     = tree
+processRecs tree (r:rs) = do
+  t <- tree
+  processRecs (insert t r) rs
+
 runTest :: IO ()
 runTest = do
-  ini <- return (newRTree 2 3)
+  ini <- return (newRTree 3 2)
   test <- return (do
-                     a1 <- insert ini r1
-                     a2 <- insert a1 r2
-                     a3 <- insert a2 r4
-                     a4 <- insert a3 r3
+                     a1 <- insert ini t1
+                     a2 <- insert a1 t1
+                     a3 <- insert a2 t3
+                     a4 <- insert a3 t4
                      a5 <- insert a4 r5
                      a6 <- insert a5 r6
-                     return a6
+                     return a4
                  )
   putStrLn(show test)
   either putStrLn showTree test
