@@ -450,8 +450,69 @@ askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
                     newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
                     newMBR    = mbr newNode
                     newLHV    = lhv newNode
-askFromBrothers z@( Node trees mbr lhv , crumbs ) = ((newHRTree,empty),False)
+askFromBrothers z@( Node trees nmbr nlhv , crumbs ) = case (head' crumbs) of
+    (Crumb cmbr clhv before after) ->
+      case (ask2Left before) of
+        (newBfr,brosL,numL) ->
+          if numL < 2 then
+            case (ask2Right brosL (2-numL) after) of
+              (newAftr,bros,num) -> case (evenlyDistributeT $ getSeqSons bros) of
+                (readyBros,True)  ->
+                  askFromBrothers (newFocus , tail' crumbs)
+                    where
+                      newSons  = (newBfr >< newAftr)
+                      newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
+                (readyBros,False) ->
+                  ((newFocus,newCrumbs), False)
+                  where
+                    newFocus  = head' readyBros
+                    newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
+                    newCrumbs = newCrumb <| (tail' crumbs)
+                    newAfter  = ((tail' readyBros) >< newAftr)
+                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
+                    newMBR    = mbr newNode
+                    newLHV    = lhv newNode
+          else
+            case (evenlyDistributeT $ getSeqSons brosL) of
+              (readyBros,True)  ->
+                askFromBrothers (newFocus , tail' crumbs)
+                  where
+                    newSons  = (newBfr >< after)
+                    newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
+              (readyBros,False) ->
+                ((newFocus,newCrumbs), False)
+                  where
+                    newFocus  = head' readyBros
+                    newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
+                    newCrumbs = newCrumb <| (tail' crumbs)
+                    newAfter  = ((tail' readyBros) >< after)
+                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
+                    newMBR    = mbr newNode
+                    newLHV    = lhv newNode
 
+
+evenlyDistributeT :: (Seq HRTree) -> ((Seq HRTree),Bool)
+evenlyDistributeT seq =
+  if S.null seq then
+    (empty,True)
+  else if S.length seq == 1 then
+    (first <| empty, False)
+  else if S.length seq == 2 then
+    (first <| second <| empty, False)
+  else
+    (foldl' func empty (clusterize 3 seq),False)
+      where
+        func seqNodes seqSons = seqNodes |> (Node seqSons newMBR newLHV)
+          where
+            newMBR = maxBoundRect $ fmap maxBoundingRectangle seqSons
+            newLHV = F.foldl' (\ h1 h2 -> h1 `max` (getLHV h2))
+                     (getLHV (head' seqSons)) (tail' seqSons)
+        first  = Node (singleton $ head' seq) (maxBoundingRectangle $ head' seq)
+                 (getLHV $ head' seq)
+        second = Node (singleton $ last' seq) (maxBoundingRectangle $ last' seq)
+                 (getLHV $ last' seq)
 
 evenlyDistribute :: (Seq Rectangle) -> ((Seq HRTree),Bool)
 evenlyDistribute seq =
@@ -490,6 +551,9 @@ clusterize numPieces sequence =
 
 getSeqRecs :: (Seq HRTree) -> (Seq Rectangle)
 getSeqRecs sec = F.foldl1 (><) (fmap recs sec)
+
+getSeqSons :: (Seq HRTree) -> (Seq HRTree)
+getSeqSons sec = F.foldl1 (><) (fmap tree sec)
 
 ask2Left :: (Seq HRTree) -> (Seq HRTree,(Seq HRTree),Int)
 ask2Left seq = foldr' pick (empty,empty,0) seq
