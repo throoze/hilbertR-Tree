@@ -43,11 +43,11 @@ module RTree
          -- * Construction
          newRTree,        -- :: Int -> Int -> RTree
          -- * Insertion
-         --insert,          -- :: RTree -> Rectangle -> Either e RTree
+         insert,          -- :: RTree -> Rectangle -> Either e RTree
          -- * Deletion
          delete,          -- :: RTree -> Rectangle -> Either e RTree
          -- * Queries
-         --search,          -- :: RTree -> Rectangle -> Maybe [ Rectangle ]
+         search,          -- :: RTree -> Rectangle -> Maybe [ Rectangle ]
        ) where
 
 import Data.Sequence as S
@@ -56,9 +56,10 @@ import Data.Bits
 import Control.Monad.Error
 import Graphics.HGL as G
 import System.IO
+import Test.QuickCheck
 
 -- | General representation of a rectangle.
-data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } --deriving (Show)
+data Rectangle = R { ul , ll , lr , ur :: ( Int , Int ) } deriving (Show)
 
 -- Establish the Rectanles order relation by comparing them on their centroid
 -- hilbert's value.
@@ -92,6 +93,10 @@ newtype CoopS = CoopS (Int,HRTree)
 -- | Representation of the data type 'RTree'
 data RTree = RTree Int Int HRTree deriving (Show)
 
+instance Eq RTree where
+  RTree cl1 cn1 hrtree1 == RTree cl2 cn2 hrtree2 =
+    cl1 == cl2 && cn1 == cn2 && hrtree1 == hrtree2
+
 {- Internal representation of the tree. The wrapper 'RTree' is used and exported
 instead, so the user can define a maximum leaf capacity and a maximum node
 capacity, on creating a new 'RTree'.
@@ -104,8 +109,8 @@ instance Show HRTree where
   show (Node t _ _) = "N ["++show (F.concat (fmap show t))++"]"
   show (Leaf t _ _) = "L ["++show (F.concat (fmap show t))++"]"
 
-instance Show Rectangle where
-  show (R _ _ _ _) = "R "
+-- instance Show Rectangle where
+--   show (R _ _ _ _) = "R "
 
 -- Internal model for applying the Zipper technique.
 data Crumb = Crumb MBR LHV (Seq HRTree) (Seq HRTree)
@@ -332,7 +337,7 @@ reconstruct ( focus , crumbs )
     Leaf rects _ _ -> case (head' crumbs) of
       Crumb cmbr clhv before after ->
         reconstruct (Node
-                     (before >< (updatedFocus <| after))
+                     (before S.>< (updatedFocus <| after))
                      (maximumBR (lmbr updatedFocus) cmbr)
                      (max (llhv updatedFocus) clhv) ,
                       tail' crumbs)
@@ -341,7 +346,7 @@ reconstruct ( focus , crumbs )
     Node tree mbr lhv -> case (head' crumbs) of
       Crumb cmbr clhv before after ->
         reconstruct (Node
-                     (before >< (focus <| after))
+                     (before S.>< (focus <| after))
                      (maximumBR mbr cmbr)
                      (max lhv clhv) ,
                      tail' crumbs)
@@ -395,7 +400,13 @@ Calculates the largest hilbert's value for a given 'Rectangle' Sequence. Assumes
 that the given Sequence is ordered by the hilbert's value.
 -}
 largestHV :: (Seq Rectangle) -> Int
-largestHV recs = hilbert $ last' recs
+largestHV recs = hilbert $ (last' $ S.sort recs)
+
+largestHilbVal :: (Seq HRTree) -> Int
+largestHilbVal trees = F.foldl' func 0 (S.sort trees)
+  where
+    func mlhv (Leaf r _ _) = max (largestHV r) mlhv
+    func mlhv (Node s _ _) = max (largestHilbVal s) mlhv
 
 {-
 Abstraction of the extraction of the lhv from any HRTree constructor
@@ -427,7 +438,7 @@ askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
                 (readyBros,True)  ->
                   askFromBrothers (newFocus , tail' crumbs)
                     where
-                      newSons  = (newBfr >< newAftr)
+                      newSons  = (newBfr S.>< newAftr)
                       newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
                 (readyBros,False) ->
                   ((newFocus,newCrumbs), False)
@@ -435,8 +446,8 @@ askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
                     newFocus  = head' readyBros
                     newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
                     newCrumbs = newCrumb <| (tail' crumbs)
-                    newAfter  = ((tail' readyBros) >< newAftr)
-                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newAfter  = ((tail' readyBros) S.>< newAftr)
+                    newNdSons = (newBfr |> newFocus) S.>< newAfter
                     newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
                     newMBR    = mbr newNode
                     newLHV    = lhv newNode
@@ -445,7 +456,7 @@ askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
               (readyBros,True)  ->
                 askFromBrothers (newFocus , tail' crumbs)
                   where
-                    newSons  = (newBfr >< after)
+                    newSons  = (newBfr S.>< after)
                     newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
               (readyBros,False) ->
                 ((newFocus,newCrumbs), False)
@@ -453,8 +464,8 @@ askFromBrothers ( Leaf recs lmbr llhv , crumbs ) =
                     newFocus  = head' readyBros
                     newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
                     newCrumbs = newCrumb <| (tail' crumbs)
-                    newAfter  = ((tail' readyBros) >< after)
-                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newAfter  = ((tail' readyBros) S.>< after)
+                    newNdSons = (newBfr |> newFocus) S.>< newAfter
                     newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
                     newMBR    = mbr newNode
                     newLHV    = lhv newNode
@@ -468,7 +479,7 @@ askFromBrothers z@( Node trees nmbr nlhv , crumbs ) = case (head' crumbs) of
                 (readyBros,True)  ->
                   askFromBrothers (newFocus , tail' crumbs)
                     where
-                      newSons  = (newBfr >< newAftr)
+                      newSons  = (newBfr S.>< newAftr)
                       newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
                 (readyBros,False) ->
                   ((newFocus,newCrumbs), False)
@@ -476,8 +487,8 @@ askFromBrothers z@( Node trees nmbr nlhv , crumbs ) = case (head' crumbs) of
                     newFocus  = head' readyBros
                     newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
                     newCrumbs = newCrumb <| (tail' crumbs)
-                    newAfter  = ((tail' readyBros) >< newAftr)
-                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newAfter  = ((tail' readyBros) S.>< newAftr)
+                    newNdSons = (newBfr |> newFocus) S.>< newAfter
                     newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
                     newMBR    = mbr newNode
                     newLHV    = lhv newNode
@@ -486,7 +497,7 @@ askFromBrothers z@( Node trees nmbr nlhv , crumbs ) = case (head' crumbs) of
               (readyBros,True)  ->
                 askFromBrothers (newFocus , tail' crumbs)
                   where
-                    newSons  = (newBfr >< after)
+                    newSons  = (newBfr S.>< after)
                     newFocus = (updateMBRLHV $ Node newSons cmbr clhv)
               (readyBros,False) ->
                 ((newFocus,newCrumbs), False)
@@ -494,8 +505,8 @@ askFromBrothers z@( Node trees nmbr nlhv , crumbs ) = case (head' crumbs) of
                     newFocus  = head' readyBros
                     newCrumb  = (Crumb newMBR newLHV newBfr newAfter)
                     newCrumbs = newCrumb <| (tail' crumbs)
-                    newAfter  = ((tail' readyBros) >< after)
-                    newNdSons = (newBfr |> newFocus) >< newAfter
+                    newAfter  = ((tail' readyBros) S.>< after)
+                    newNdSons = (newBfr |> newFocus) S.>< newAfter
                     newNode   = updateMBRLHV $ Node newNdSons emptyRectangle 0
                     newMBR    = mbr newNode
                     newLHV    = lhv newNode
@@ -558,10 +569,10 @@ clusterize numPieces sequence =
       extraSize = if ((S.length sequence) `mod` numPieces) > 0 then 1 else 0
 
 getSeqRecs :: (Seq HRTree) -> (Seq Rectangle)
-getSeqRecs sec = F.foldl1 (><) (fmap recs sec)
+getSeqRecs sec = F.foldl1 (S.><) (fmap recs sec)
 
 getSeqSons :: (Seq HRTree) -> (Seq HRTree)
-getSeqSons sec = F.foldl1 (><) (fmap tree sec)
+getSeqSons sec = F.foldl1 (S.><) (fmap tree sec)
 
 ask2Left :: (Seq HRTree) -> (Seq HRTree,(Seq HRTree),Int)
 ask2Left seq = foldr' pick (empty,empty,0) seq
@@ -617,7 +628,7 @@ search (RTree cl cn t) r = case (toList $ auxSearch r t) of
     verifyOverlap ni = overlapped r (mbr ni)
 
 insert :: RTree -> Rectangle -> Either String RTree
-insert (RTree cl cn t) r = 
+insert (RTree cl cn t) r =
   let newson ov =
         (either
          (\r -> updateMBRLHV (Leaf (S.empty |> r) emptyMBR 0))
@@ -625,7 +636,7 @@ insert (RTree cl cn t) r =
   do
    (maybeov,newt) <- insert' t r cl cn
    newSons <- Right $
-              maybe newt (\ov->updateMBRLHV (Node (S.empty|>newt|>(newson ov)) 
+              maybe newt (\ov->updateMBRLHV (Node (S.empty|>newt|>(newson ov))
                                              emptyMBR 0))
               maybeov
    Right $ RTree cl cn newSons
@@ -709,14 +720,14 @@ replaceSons (Right son@(Leaf _ _ _)) rs = son{recs = fmap left rs}
 
 redistribute :: Seq (Seq a) -> Int -> Seq (Seq a)
 redistribute stuffList parts = evenly stuff S.empty
-  where stuff = F.foldl1 (><) stuffList
+  where stuff = F.foldl1 (S.><) stuffList
         m = max 1 ((S.length stuff) `mod` parts)
         sz = m + ((S.length stuff) `div` parts)
         evenly sequ acc =
           if (S.null sequ) then
             acc
           else
-            evenly (S.drop sz sequ) (acc >< (S.empty |> (S.take sz sequ)))
+            evenly (S.drop sz sequ) (acc S.>< (S.empty |> (S.take sz sequ)))
 
 
 -- | Construct a new empty RTree which Leaf capacity is @cl@, and which Node
@@ -775,10 +786,10 @@ showTree (RTree cl cn hrtree) = do
 
 drawRectangle :: G.Window -> Rectangle -> IO ()
 drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
-  where  ulx = (ulxB * winSize) `div` recsSize 
-         uly = (ulyB * winSize) `div` recsSize 
-         lrx = (lrxB * winSize) `div` recsSize 
-         lry = (lryB * winSize) `div` recsSize 
+  where  ulx = (ulxB * winSize) `div` recsSize
+         uly = (ulyB * winSize) `div` recsSize
+         lrx = (lrxB * winSize) `div` recsSize
+         lry = (lryB * winSize) `div` recsSize
          r = (G.line (ulx,uly) (lrx,uly)): --top
              (G.line (lrx,uly) (lrx,lry)): --right
              (G.line (lrx,lry) (ulx,lry)): --bottom
@@ -786,10 +797,10 @@ drawRectangle w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) 
 
 drawMBR :: G.Window -> Rectangle -> IO ()
 drawMBR w R{ul=(ulxB,ulyB) , lr=(lrxB,lryB)} = F.mapM_ (G.drawInWindow w) r
-  where  ulx = ((ulxB-50) * winSize) `div` recsSize 
-         uly = ((ulyB-50) * winSize) `div` recsSize 
-         lrx = ((lrxB+50) * winSize) `div` recsSize 
-         lry = ((lryB+50) * winSize) `div` recsSize 
+  where  ulx = ((ulxB-50) * winSize) `div` recsSize
+         uly = ((ulyB-50) * winSize) `div` recsSize
+         lrx = ((lrxB+50) * winSize) `div` recsSize
+         lry = ((lryB+50) * winSize) `div` recsSize
          r = withColor (Red) (G.line (ulx,uly) (lrx,uly)): --top
              withColor (Red) (G.line (lrx,uly) (lrx,lry)): --right
              withColor (Red)(G.line (lrx,lry) (ulx,lry)): --bottom
@@ -805,7 +816,7 @@ showTree' w (Leaf rs mbr _) = do
 
 r1 = R{ul=(1000 ,1000) , ur=(10000,1000),
        ll=(1000 ,10000), lr=(10000,10000)}
-     
+
 r2 = R{ul=(4000,4500), ur=(5000,4000),
        ll=(4000,6000), lr=(5000,6000)}
 
@@ -814,13 +825,13 @@ r4 = R{ul=(2000,2000), ur=(2500,2000),
 
 r5 = R{ul=(12000,12000), ur=(12500,12000),
        ll=(12000,12500), lr=(12500,12500)}
-     
+
 r3 = R{ul=(50000,50000), ur=(65536,50000),
        ll=(50000,65536), lr=(65536,65536)}
 
 r6 = R{ul=(40000,40000), ur=(65536,40000),
        ll=(40000,65536), lr=(65536,65536)}
-      
+
 t1 = R{ur=(2339,5422),lr=(2339,5447),ll=(1876,5447),ul=(1876,5422)}
 t2 = R{ur=(6654,6324),lr=(6654,6299),ll=(7084,6299),ul=(7084,6324)}
 t3 = R{ur=(8058,6474),lr=(8058,6354),ll=(8083,6354),ul=(8083,6474)}
@@ -837,7 +848,7 @@ runTest2 filename = do
   putStrLn(bigString)
   putStrLn(show test)
   either putStrLn showTree test
-  
+
 decode :: String -> Rectangle
 decode recStr = R{ur=(urx,ury),lr=(lrx,lry),ll=(llx,lly),ul=(ulx,uly)}
   where (urx:ury:lrx:lry:llx:lly:ulx:uly:xs) = map read $ words $ map commasToWthLn recStr
@@ -866,3 +877,46 @@ runTest = do
                  )
   putStrLn(show test)
   either putStrLn showTree test
+
+{- QuickCheck Properties and Arbitrary instaces -}
+
+
+instance Arbitrary Rectangle where
+  arbitrary = liftM4 R
+              (suchThat
+               (arbitrary :: Gen (Int,Int))
+               (\ (x,y) -> 0 <= x && x <= 65536 && 0 <= y && y <= 65536))
+              (suchThat
+               (arbitrary :: Gen (Int,Int))
+               (\ (x,y) -> 0 <= x && x <= 65536 && 0 <= y && y <= 65536))
+              (suchThat
+               (arbitrary :: Gen (Int,Int))
+               (\ (x,y) -> 0 <= x && x <= 65536 && 0 <= y && y <= 65536))
+              (suchThat
+               (arbitrary :: Gen (Int,Int))
+               (\ (x,y) -> 0 <= x && x <= 65536 && 0 <= y && y <= 65536))
+
+instance Arbitrary RTree where
+  arbitrary = liftM (foldl' func (newRTree 3 2)) $ liftM (Prelude.take 2) $
+              listOf1 (arbitrary :: Gen Rectangle)
+                where
+                  func tree rec =
+                    case (insert tree rec) of
+                      Right t -> t
+                      Left e -> error (show e)
+
+prop_inverse1 :: RTree -> Rectangle -> Bool
+prop_inverse1 tr rec = deleteEither (insert tr rec) rec == tr
+  where
+    deleteEither (Right t) rec = case (delete t rec) of
+      Right t -> t
+      Left _ -> tr
+    deleteEither (Left _) rec = tr
+
+prop_inverse2 tr rec = insertEither (deleteEither (insert tr rec) rec) rec
+                       == insert tr rec
+  where
+    deleteEither (Right t) rec = delete t rec
+    deleteEither (Left e) rec = Right tr
+    insertEither (Right t) rec = insert t rec
+    insertEither (Left e) rec = Right tr
